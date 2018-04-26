@@ -1,0 +1,482 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <meta charset="utf-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <title>London Housing Prices</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link href="https://fonts.googleapis.com/css?family=Open+Sans|Roboto" rel="stylesheet">
+    <script src="https://d3js.org/d3.v5.min.js"></script>
+
+    <style>
+        body {
+            font-family: "Roboto", sans-serif;
+            font-size: 12px;
+        }
+        
+        #outer-container {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+        
+        h1 {
+            font-family: "Open Sans", serif;
+            font-size: 36px;
+            color: #6e016b;
+        }
+        
+        svg text {
+            font-family: "Roboto", sans-serif;
+            font-size: 10px;
+            /* text-shadow: 1px 0 #fff, -1px 0 #fff, 0 1px #fff, 0 -1px #fff; */
+        }
+        
+        #chart {
+            position: relative;
+        }
+        
+        .borough-label {
+            fill: #fff;
+        }
+        
+        .track,
+        .handle {
+            fill: #6e016b;
+            pointer-events: none;
+        }
+        
+        .track-overlay {
+            fill: none;
+            pointer-events: all;
+        }
+        
+        .button {
+            background-color: #6e016b;
+            border: none;
+            color: white;
+            width: 40px;
+            padding: 6px 24px;
+            text-align: center;
+            text-decoration: none;
+            display: inline-block;
+            font-size: 12px;
+            cursor: pointer;
+        }
+        
+        .button:hover {
+            opacity: 0.8;
+        }
+        
+        #play-button {
+            position: absolute;
+            left: 108px;
+            top: 640px;
+        }
+        
+        #tooltip {
+            position: absolute;
+            padding: 8px 16px;
+            line-height: 1.6em;
+            background-color: rgba(0, 0, 0, 0.6);
+            color: #fff;
+            text-align: center;
+            pointer-events: none;
+            opacity: 0;
+            border-radius: 8px;
+        }
+        
+        #tooltip::after {
+            content: " ";
+            position: absolute;
+            top: 100%;
+            left: 50%;
+            margin-left: -5px;
+            border-width: 5px;
+            border-style: solid;
+            border-color: rgba(0, 0, 0, 0.6) transparent transparent transparent;
+        }
+    </style>
+</head>
+
+<body>
+    <div id="outer-container">
+        <h1>Average London House Price 1995-2016</h1>
+        <div id="chart"></div>
+    </div>
+    <script>
+        /////////////////////////////////////////////////////////////////
+        //// Initial Set Up /////////////////////////////////////////////
+        /////////////////////////////////////////////////////////////////
+        let currentYear = 2016, // Track current year for slider
+            playing = false, // Track map animation
+            timer, // Track map animation
+            currentColorFilter, // Track hover over legend color rect
+            tooltipBorough; // Track which borough the mouse event targets for updating tooltip during animation
+
+        // Chart dimensions
+        const margin = {
+                top: 20,
+                right: 20,
+                bottom: 100,
+                left: 20
+            },
+            width = 960 - margin.left - margin.right,
+            height = 700 - margin.top - margin.bottom;
+
+
+        const thresholds = [100000, 300000, 350000, 500000, 1000000]; // Price bins
+        const colors = ['#bfd3e6', '#9ebcda', '#8c96c6', '#8c6bb1', '#88419d', '#4d004b']; // Price bins colors
+        const muteColor = "#ddd"; // Unhighlight color
+        const legendLabels = [
+        "<£100K",
+        "£100K- £300K",
+        "£300K- £350K",
+        "£350K- £500K",
+        "£500K- £1MIL",
+        ">£1MIL"
+      ];
+
+        const mousemoveEvent = new Event("mousemove"); // Manually trigger mousemover event to update tooltip when anmiation is playing
+
+        const formatPrice = d3.format(","); // Format price with comma
+
+        /////////////////////////////////////////////////////////////////
+        // Scales
+        // X scale for legend
+        const x = d3.scaleBand()
+            .domain(colors)
+            .rangeRound([0, 300]);
+
+        // Color scale for legend and map
+        const color = d3.scaleThreshold()
+            .domain(thresholds)
+            .range(colors);
+
+        // X scale for slider
+        const t = d3.scaleLinear()
+            .domain([1995, 2016])
+            .rangeRound([0, 600])
+            .clamp(true);
+
+        /////////////////////////////////////////////////////////////////
+        // SVG containers
+        const svg = d3.select("#chart")
+            .append("svg")
+            .attr("width", width + margin.left + margin.right)
+            .attr("height", height + margin.top + margin.bottom);
+
+        // Map container
+        const map = svg.append("g")
+            .attr("class", "map")
+            .attr("transform", "translate(" + margin.left + "," + margin.top + ")");
+
+        // Tooltip
+        const tooltip = d3.select("body")
+            .append("div")
+            .attr("id", "tooltip");
+
+        /////////////////////////////////////////////////////////////////
+        //// Draw Legend ////////////////////////////////////////////////
+        /////////////////////////////////////////////////////////////////
+        const legend = svg.append("g")
+            .attr("class", "key")
+            .attr("transform", "translate(100," + (margin.top + height - 20) + ")");
+
+        // Legend color rectangle
+        legend.selectAll("rect")
+            .data(colors)
+            .enter().append("rect")
+            .attr("x", d => x(d))
+            .attr("height", 30)
+            .attr("width", d => x.bandwidth())
+            .attr("fill", d => d)
+            .on("mouseover", (d) => {
+                currentColorFilter = d;
+                filterPrice(d);
+            })
+            .on("mouseout", () => {
+                currentColorFilter = null;
+                unfilterPrice();
+            });
+
+        // Legned ticks
+        const xAxis = d3.axisBottom(x)
+            .tickSize(0)
+            .tickFormat((x, i) => legendLabels[i]);
+        const xGroup = legend.append("g")
+            .attr("transform", "translate(0, 30)")
+            .call(xAxis);
+        xGroup.selectAll(".tick text")
+            .call(wrap, x.bandwidth())
+        xGroup.select(".domain")
+            .remove();
+
+        /////////////////////////////////////////////////////////////////
+        //// Draw Slider ////////////////////////////////////////////////
+        /////////////////////////////////////////////////////////////////
+        const slider = svg.append("g")
+            .attr("class", "slider")
+            .attr("transform", "translate(240," + (margin.top + height + 40) + ")");
+
+        // Slider track and invisible overlay for capturing mouse event
+        slider.append("rect")
+            .attr("class", "track")
+            .attr("x", t.range()[0])
+            .attr("height", 8)
+            .attr("width", t.range()[1] - t.range()[0])
+            .select(function () {
+                return this.parentNode.appendChild(this.cloneNode(true));
+            })
+            .attr("class", "track-overlay")
+            .call(d3.drag()
+                .on("start drag", dragging)
+                .on("end", updateMap));
+
+        // Slider title
+        slider.insert("text", ".track-overlay")
+            .attr("class", "caption")
+            .attr("x", t.range()[0] - 6)
+            .attr("y", "0.7em")
+            .attr("text-anchor", "end")
+            .text("Year");
+
+        // Slider ticks
+        const tAxis = d3.axisBottom(t)
+            .tickSize(13)
+            .tickFormat(d3.format("d"))
+            .tickValues(d3.range(1995, 2017));
+        slider.insert("g", ".track-overlay")
+            .call(tAxis)
+            .select(".domain")
+            .remove();
+
+        // Slider circle handle
+        const handle = slider.insert("circle", ".track-overlay")
+            .attr("class", "handle")
+            .attr("cx", t(currentYear))
+            .attr("cy", 4)
+            .attr("r", 8);
+
+        /////////////////////////////////////////////////////////////////
+        //// Play Button ////////////////////////////////////////////////
+        /////////////////////////////////////////////////////////////////
+        const playButton = d3.select("#chart")
+            .append("div")
+            .attr("class", "button")
+            .attr("id", "play-button")
+            .text("PLAY")
+            .on("click", animateMap);
+
+        /////////////////////////////////////////////////////////////////
+        //// Load And Process Data //////////////////////////////////////
+        /////////////////////////////////////////////////////////////////
+        Promise.all([
+        d3.json("london.geojson"),
+        d3.csv("landregistryhousepricesborough.csv"),
+        d3.csv("london_borough_abbr.csv")
+      ]).then(processData);
+
+        function processData([london, prices, abbr]) {
+            // Filter prices only for London boroughs
+            var londonPrices = prices
+                .filter(d => d.Code.slice(0, 3) === "E09" && d.Measure === "Median");
+            londonPrices.forEach(d => d.Value = +d.Value);
+
+            // Calculate ranks
+            var priceByYear = d3.nest()
+                .key(d => d.Year)
+                .sortValues((a, b) => b.Value - a.Value)
+                .object(londonPrices);
+
+            var priceByBorough = d3.nest()
+                .key(d => d.Area)
+                .rollup(leaves => leaves.reduce((values, leaf) => {
+                    values[leaf.Year] = {};
+                    values[leaf.Year].price = leaf.Value;
+                    values[leaf.Year].rank = priceByYear[leaf.Year].findIndex(d => d.Code === leaf.Code) + 1;
+                    return values;
+                }, {}))
+                .object(londonPrices);
+
+            // Add housing prices to london geojson
+            london.features.forEach(d => {
+                d.properties.values = priceByBorough[d.properties.name];
+                d.properties.abbr = abbr.find(e => e.Area === d.properties.name).Abbr;
+            });
+
+            drawMap(london);
+        }
+
+        /////////////////////////////////////////////////////////////////
+        //// Draw Map And Data Binding //////////////////////////////////
+        /////////////////////////////////////////////////////////////////
+        function drawMap(london) {
+            // Map projection setup
+            const projection = d3.geoMercator()
+                .fitSize([width, height], london);
+            const path = d3.geoPath().projection(projection);
+
+            // Borough g container for polygon and name
+            const borough = map.append("g")
+                .attr("id", "boroughs-container")
+                .selectAll("g")
+                .data(london.features)
+                .enter().append("g")
+                .attr("class", "borough");
+
+            // Borough polygons
+            borough.append("path")
+                .attr("class", d => "borough-polygon")
+                .attr("d", path)
+                .attr("stroke", "#fff")
+                .attr("stroke-width", 0.5)
+                .attr("fill", d => color(d.properties.values[currentYear].price))
+                .on("mouseover", showTooltip)
+                .on("mousemove", moveTooltip)
+                .on("mouseout", hideTooltip);
+
+            // Borough names
+            borough.append("text")
+                .attr("class", "borough-label")
+                .attr("x", d => path.centroid(d)[0])
+                .attr("y", d => path.centroid(d)[1])
+                .attr("text-anchor", "middle")
+                .attr("dy", "0.4em")
+                .style("pointer-events", "none")
+                .text(d => d.properties.abbr);
+        }
+
+        /////////////////////////////////////////////////////////////////
+        //// Event Listeners ////////////////////////////////////////////
+        /////////////////////////////////////////////////////////////////
+
+        /////////////////////////////////////////////////////////////////
+        // Legend Price Filter
+        function filterPrice(d) {
+            map.selectAll(".borough-polygon")
+                .filter(e => color(e.properties.values[currentYear].price) !== d)
+                .attr("fill", muteColor);
+        }
+
+        function unfilterPrice() {
+            map.selectAll(".borough-polygon")
+                .attr("fill", d => color(d.properties.values[currentYear].price));
+        }
+
+        /////////////////////////////////////////////////////////////////
+        // Tooltip
+        function showTooltip(d) {
+            tooltip.transition()
+                .style("opacity", 1);
+            moveTooltip(d);
+            tooltipBorough = d3.event.target;
+        }
+
+        function moveTooltip(d) {
+            const name = d.properties.name;
+            const price = d.properties.values[currentYear].price;
+            const rank = d.properties.values[currentYear].rank;
+
+            tooltip.html(name + "<br>" + currentYear + "<br>£" + formatPrice(price) + "<br>#" + rank);
+
+            const boundingRect = tooltip.node().getBoundingClientRect();
+            const tooltipWidth = boundingRect.width;
+            const tooltipHeight = boundingRect.height;
+
+            tooltip.style("left", (d3.event.pageX - tooltipWidth / 2) + "px")
+                .style("top", (d3.event.pageY - tooltipHeight - 7) + "px");
+        }
+
+        function hideTooltip() {
+            tooltip.transition()
+                .style("opacity", 0);
+            tooltipBorough = null;
+        }
+
+        /////////////////////////////////////////////////////////////////
+        // Slider
+        function dragging() {
+            currentYear = Math.round(t.invert(d3.event.x));
+            handle.transition()
+                .duration(50)
+                .ease(d3.easeLinear)
+                .attr("cx", t(currentYear));
+        }
+
+        /////////////////////////////////////////////////////////////////
+        // Update map
+        function updateMap() {
+            map.selectAll(".borough-polygon")
+                .transition()
+                .duration(750)
+                .attr("fill", d => {
+                    const fillColor = color(d.properties.values[currentYear].price);
+                    if (currentColorFilter && currentColorFilter !== fillColor) {
+                        return muteColor;
+                    }
+                    return fillColor
+                });
+        }
+
+        /////////////////////////////////////////////////////////////////
+        // Map Animation
+        function animateMap() {
+            if (playing === false) { // If map is NOT playing
+                timer = setInterval(() => {
+                    // Increment currentYear
+                    if (currentYear === 2016) {
+                        currentYear = 1995;
+                    } else {
+                        currentYear++;
+                    }
+                    handle.attr("cx", t(currentYear));
+                    updateMap();
+                    if (tooltipBorough) {
+                        tooltipBorough.dispatchEvent(mousemoveEvent); // Update tooltip when animation is playing
+                    }
+                }, 1000);
+
+                playButton.text("STOP"); // Change button label to STOP
+                playing = true; // Change status of the animation
+            } else { // If map is playing
+                clearInterval(timer); // Stop the animation
+
+                playButton.text("PLAY"); // Change button label to PLAY
+                playing = false; // Change status of the animation
+            }
+        }
+
+        /////////////////////////////////////////////////////////////////
+        //// Utilities //////////////////////////////////////////////////
+        /////////////////////////////////////////////////////////////////
+
+        // Wrap long label
+        function wrap(text, width) {
+            text.each(function () {
+                var text = d3.select(this),
+                    words = text.text().split(/\s+/).reverse(),
+                    word,
+                    line = [],
+                    lineNumber = 0,
+                    lineHeight = 1.1, // ems
+                    y = text.attr("y"),
+                    dy = parseFloat(text.attr("dy")),
+                    tspan = text.text(null).append("tspan").attr("x", 0).attr("y", y).attr("dy", dy + "em");
+                while (word = words.pop()) {
+                    line.push(word);
+                    tspan.text(line.join(" "));
+                    if (tspan.node().getComputedTextLength() > width) {
+                        line.pop();
+                        tspan.text(line.join(" "));
+                        line = [word];
+                        tspan = text.append("tspan").attr("x", 0).attr("y", y).attr("dy", ++lineNumber * lineHeight + dy + "em").text(word);
+                    }
+                }
+            });
+        }
+    </script>
+</body>
+
+</html>
